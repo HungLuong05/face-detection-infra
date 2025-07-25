@@ -57,6 +57,13 @@ class FaceDetectionInfraStack(Stack):
             "Allow HTTPS access"
         )
 
+        # Allow access to face detection app (port 7860)
+        security_group.add_ingress_rule(
+            ec2.Peer.any_ipv4(),
+            ec2.Port.tcp(7860),
+            "Allow access to face detection application"
+        )
+
         # Create Key Pair (you'll need to create this in AWS Console first, or use an existing one)
         # For this example, we'll reference an existing key pair - comment out if you don't have one
         # key_name = "face-detection-key"  # Replace with your actual key pair name
@@ -80,12 +87,56 @@ class FaceDetectionInfraStack(Stack):
             user_data=ec2.UserData.for_linux(),
         )
 
-        # Add user data script to install basic tools (optional)
+        # Add user data script to install basic tools and set up face detection app
         instance.user_data.add_commands(
             "yum update -y",
-            "yum install -y python3 python3-pip",
+            "yum install -y python3 python3-pip git",
             "pip3 install --upgrade pip",
-            # Add more commands as needed for your face detection application
+            
+            # Create a user for running the application (optional, for security)
+            "useradd -m facedetection || true",
+            "cd /home/facedetection",
+            
+            # Clone the face detection repository
+            "git clone https://github.com/minhtuan-ne/CoderPush-Human-Detection.git",
+            "cd CoderPush-Human-Detection",
+            
+            # Create virtual environment and install dependencies
+            "python3 -m venv venv",
+            "source venv/bin/activate",
+            "pip install -r requirements/requirements.txt",
+            
+            # Change ownership to facedetection user
+            "chown -R facedetection:facedetection /home/facedetection",
+            
+            # Create a systemd service file for auto-start
+            "cat > /etc/systemd/system/facedetection.service << 'EOF'",
+            "[Unit]",
+            "Description=Face Detection API Service",
+            "After=network.target",
+            "",
+            "[Service]",
+            "Type=simple",
+            "User=facedetection",
+            "WorkingDirectory=/home/facedetection/CoderPush-Human-Detection",
+            "Environment=PATH=/home/facedetection/CoderPush-Human-Detection/venv/bin",
+            "ExecStart=/home/facedetection/CoderPush-Human-Detection/venv/bin/python src/api/app.py",
+            "Restart=always",
+            "RestartSec=10",
+            "",
+            "[Install]",
+            "WantedBy=multi-user.target",
+            "EOF",
+            
+            # Enable and start the service
+            "systemctl daemon-reload",
+            "systemctl enable facedetection.service",
+            "systemctl start facedetection.service",
+            
+            # Add firewall rule for port 7860 (if firewalld is running)
+            "firewall-cmd --permanent --add-port=7860/tcp || true",
+            "firewall-cmd --reload || true",
+            "python src/api/app.py"
         )
 
         # Output the instance's public IP address
@@ -100,4 +151,10 @@ class FaceDetectionInfraStack(Stack):
             self, "InstanceId",
             value=instance.instance_id,
             description="EC2 Instance ID"
+        )
+
+        CfnOutput(
+            self, "FaceDetectionAppURL",
+            value=f"http://{instance.instance_public_ip}:7860",
+            description="URL to access the Face Detection application"
         )

@@ -1,6 +1,8 @@
 from aws_cdk import (
     Stack,
     aws_ec2 as ec2,
+    aws_s3 as s3,
+    aws_iam as iam,
     CfnOutput,
     RemovalPolicy
 )
@@ -10,6 +12,26 @@ class FaceDetectionInfraStack(Stack):
 
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
+
+        # Create S3 bucket for face detection application
+        face_detection_bucket = s3.Bucket(
+            self, "FaceDetectionBucket",
+            bucket_name=f"face-detection-bucket-{self.account}-{self.region}",  # Unique bucket name
+            versioned=False,  # Disable versioning for cost savings
+            removal_policy=RemovalPolicy.DESTROY,  # Delete bucket on stack deletion
+            auto_delete_objects=True,  # Automatically delete objects when destroying bucket
+            public_read_access=False,  # Keep bucket private
+            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,  # Block all public access
+            encryption=s3.BucketEncryption.S3_MANAGED,  # Server-side encryption
+            cors=[
+                s3.CorsRule(
+                    allowed_origins=["*"],
+                    allowed_methods=[s3.HttpMethods.GET, s3.HttpMethods.POST, s3.HttpMethods.PUT],
+                    allowed_headers=["*"],
+                    max_age=3000
+                )
+            ]
+        )
 
         # Create VPC
         vpc = ec2.Vpc(
@@ -30,6 +52,19 @@ class FaceDetectionInfraStack(Stack):
             ],
         )
         vpc.apply_removal_policy(RemovalPolicy.DESTROY)  # Remove VPC on stack deletion
+
+        # Create IAM role for EC2 instance to access S3
+        ec2_role = iam.Role(
+            self, "FaceDetectionEC2Role",
+            assumed_by=iam.ServicePrincipal("ec2.amazonaws.com"),
+            managed_policies=[
+                iam.ManagedPolicy.from_aws_managed_policy_name("AmazonSSMManagedInstanceCore")  # For Systems Manager
+            ]
+        )
+        ec2_role.apply_removal_policy(RemovalPolicy.DESTROY)
+
+        # Grant S3 bucket permissions to EC2 role
+        face_detection_bucket.grant_read_write(ec2_role)
 
         # Create Security Group
         security_group = ec2.SecurityGroup(
@@ -86,13 +121,14 @@ class FaceDetectionInfraStack(Stack):
                 subnet_type=ec2.SubnetType.PUBLIC  # Place in public subnet for easy access
             ),
             security_group=security_group,
+            role=ec2_role,
             # key_pair=ec2.KeyPair.from_key_pair_name(self, "KeyPair", key_name),  # Uncomment and set key_name if you have a key pair
             user_data=ec2.UserData.for_linux(),
             block_devices=[
                 ec2.BlockDevice(
                     device_name="/dev/xvda",
                     volume=ec2.BlockDeviceVolume.ebs(
-                        volume_size=16,  # 16 GB root volume
+                        volume_size=20,  # 20 GB root volume
                         volume_type=ec2.EbsDeviceVolumeType.GP3,  # General Purpose SSD
                         encrypted=True,  # Encrypt the volume
                         delete_on_termination=True  # Delete volume on instance termination
@@ -105,7 +141,7 @@ class FaceDetectionInfraStack(Stack):
         # Add user data script to install basic tools (optional)
         instance.user_data.add_commands(
             "dnf update -y",
-            "dnf install -y python3.11 python3-pip git",
+            "dnf install -y python3.11 python3.11-devel python3.9-devel python3-pip git gcc-c++ mesa-libGL",
             "pip3 install --upgrade pip",
 
             # Create a user for running the application (optional, for security)
@@ -115,12 +151,21 @@ class FaceDetectionInfraStack(Stack):
             # Change ownership to facedetection user
             "chown -R facedetection:facedetection /home/facedetection",
 
+            # Set S3 environment variables for the facedetection user
+            f"echo 'export S3_BUCKET_NAME={face_detection_bucket.bucket_name}' >> /home/facedetection/.bashrc",
+            f"echo 'export S3_PREFIX=faces' >> /home/facedetection/.bashrc",  # Add custom prefix
+            f"echo 'export AWS_DEFAULT_REGION={self.region}' >> /home/facedetection/.bashrc",
+            f"echo 'export S3_BUCKET_NAME={face_detection_bucket.bucket_name}' >> /home/facedetection/.profile",
+            f"echo 'export S3_PREFIX=faces' >> /home/facedetection/.profile",
+            f"echo 'export AWS_DEFAULT_REGION={self.region}' >> /home/facedetection/.profile",
+
             # Run git clone as the facedetection user
             "sudo -u facedetection bash -c 'cd /home/facedetection && git clone https://github.com/minhtuan-ne/CoderPush-Human-Detection.git'",
             
             # Create virtual environment and install dependencies
             "sudo -u facedetection bash -c 'cd /home/facedetection/CoderPush-Human-Detection && python3 -m venv venv'",
-            "sudo -u facedetection bash -c 'cd /home/facedetection/CoderPush-Human-Detection && source venv/bin/activate && pip install -r requirements/requirements.txt'",
+            "sudo -u facedetection bash -c 'mkdir -p /home/facedetection/tmp'",
+            "sudo -u facedetection bash -c 'cd /home/facedetection/CoderPush-Human-Detection && source venv/bin/activate && TMPDIR=/home/facedetection/tmp pip install -r requirements/requirements.txt'",
 
             # # Create virtual environment and install dependencies
             # "python3 -m venv venv",

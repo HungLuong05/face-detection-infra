@@ -106,15 +106,15 @@ class FaceDetectionInfraStack(Stack):
         # For this example, we'll reference an existing key pair - comment out if you don't have one
         # key_name = "face-detection-key"  # Replace with your actual key pair name
 
-        # Create EC2 Instance (t2.micro)
+        # Create EC2 Instance (t2.large)
         instance = ec2.Instance(
             self, "FaceDetectionInstance",
             instance_type=ec2.InstanceType.of(
                 ec2.InstanceClass.T2,
                 ec2.InstanceSize.LARGE
             ),
-            machine_image=ec2.AmazonLinuxImage(
-                generation=ec2.AmazonLinuxGeneration.AMAZON_LINUX_2023
+            machine_image=ec2.MachineImage.from_ssm_parameter(
+                "/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id"
             ),
             vpc=vpc,
             vpc_subnets=ec2.SubnetSelection(
@@ -122,13 +122,12 @@ class FaceDetectionInfraStack(Stack):
             ),
             security_group=security_group,
             role=ec2_role,
-            # key_pair=ec2.KeyPair.from_key_pair_name(self, "KeyPair", key_name),  # Uncomment and set key_name if you have a key pair
             user_data=ec2.UserData.for_linux(),
             block_devices=[
                 ec2.BlockDevice(
-                    device_name="/dev/xvda",
+                    device_name="/dev/sda1",
                     volume=ec2.BlockDeviceVolume.ebs(
-                        volume_size=20,  # 20 GB root volume
+                        volume_size=32,  # 20 GB root volume
                         volume_type=ec2.EbsDeviceVolumeType.GP3,  # General Purpose SSD
                         encrypted=True,  # Encrypt the volume
                         delete_on_termination=True  # Delete volume on instance termination
@@ -140,8 +139,8 @@ class FaceDetectionInfraStack(Stack):
 
         # Add user data script to install basic tools (optional)
         instance.user_data.add_commands(
-            "dnf update -y",
-            "dnf install -y python3.11 python3.11-devel python3.9-devel python3-pip git gcc-c++ mesa-libGL",
+            "apt update -y",
+            "apt install -y python3.11 python3.11-dev python3.10-venv python3-pip git build-essential ffmpeg",
             "pip3 install --upgrade pip",
 
             # Create a user for running the application (optional, for security)
@@ -176,32 +175,33 @@ class FaceDetectionInfraStack(Stack):
             # "chown -R facedetection:facedetection /home/facedetection",
 
             # Create a systemd service file for auto-start
-            "cat > /etc/systemd/system/facedetection.service << 'EOF'",
-            "[Unit]",
-            "Description=Face Detection API Service",
-            "After=network.target",
-            "",
-            "[Service]",
-            "Type=simple",
-            "User=facedetection",
-            "WorkingDirectory=/home/facedetection/CoderPush-Human-Detection",
-            "Environment=PATH=/home/facedetection/CoderPush-Human-Detection/venv/bin",
-            "ExecStart=/home/facedetection/CoderPush-Human-Detection/venv/bin/python src/api/app.py",
-            "Restart=always",
-            "RestartSec=10",
-            "",
-            "[Install]",
-            "WantedBy=multi-user.target",
-            "EOF",
+            # "cat > /etc/systemd/system/facedetection.service << 'EOF'",
+            # "[Unit]",
+            # "Description=Face Detection API Service",
+            # "After=network.target",
+            # "",
+            # "[Service]",
+            # "Type=simple",
+            # "User=facedetection",
+            # "WorkingDirectory=/home/facedetection/CoderPush-Human-Detection",
+            # "Environment=PATH=/home/facedetection/CoderPush-Human-Detection/venv/bin",
+            # "ExecStart=/home/facedetection/CoderPush-Human-Detection/venv/bin/python src/api/app.py",
+            # "Restart=always",
+            # "RestartSec=10",
+            # "",
+            # "[Install]",
+            # "WantedBy=multi-user.target",
+            # "EOF",
 
-            # Enable and start the service
-            "systemctl daemon-reload",
-            "systemctl enable facedetection.service",
-            "systemctl start facedetection.service",
+            # # Enable and start the service
+            # "systemctl daemon-reload",
+            # "systemctl enable facedetection.service",
+            # "systemctl start facedetection.service",
 
             # Add firewall rule for port 7860 (if firewalld is running)
-            "firewall-cmd --permanent --add-port=7860/tcp || true",
-            "firewall-cmd --reload || true",
+            "ufw allow 22/tcp || true",
+            "ufw allow 7860/tcp || true",
+            "ufw --force enable || true",
             # "python src/api/app.py"
         )
 
